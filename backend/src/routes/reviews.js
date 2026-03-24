@@ -23,7 +23,7 @@ const mockReviews = [
     authorName: 'Mark Thompson',
     starRating: 2,
     comment:
-      'Really disappointing visit. Waited over 30 minutes and the order was wrong. The manager didn't seem to care.',
+      'Really disappointing visit. Waited over 30 minutes and the order was wrong. The manager did not seem to care.',
     sentiment: 'negative',
     autoReply:
       "Hi Mark, we're truly sorry about your experience — this is not the standard we hold ourselves to. Please reach out to us directly so we can make this right.",
