@@ -12,7 +12,7 @@ function Stars({ rating }) {
   );
 }
 
-function ReviewCard({ review, tenantId, onApproved }) {
+function ReviewCard({ review, tenantId, onApproved, showToast }) {
   const [replyText, setReplyText] = useState(review.autoReply || '');
   const [editing, setEditing] = useState(false);
   const [approving, setApproving] = useState(false);
@@ -36,7 +36,7 @@ function ReviewCard({ review, tenantId, onApproved }) {
       setEditing(false);
       if (onApproved) onApproved(review.id);
     } catch (err) {
-      alert('Failed to post reply: ' + (err.response?.data?.error || err.message));
+      showToast?.('Failed to post reply: ' + (err.response?.data?.error || err.message), 'error');
     } finally {
       setApproving(false);
     }
@@ -50,14 +50,20 @@ function ReviewCard({ review, tenantId, onApproved }) {
       setCurrentReply(newReply);
       setReplyText(newReply);
     } catch (err) {
-      alert('Regeneration failed: ' + err.message);
+      showToast?.('Regeneration failed: ' + err.message, 'error');
     } finally {
       setRegenerating(false);
     }
   }
 
-  const borderColor = approved ? '#c6f6d5' : isHighUrgency ? '#fed7d7' : isNegative ? '#feebc8' : '#e2e8f0';
-  const leftBorder = isHighUrgency && !approved ? '4px solid #e53e3e' : approved ? '4px solid #48bb78' : '4px solid transparent';
+  const isPositive = review.sentiment === 'positive';
+  const borderColor = approved ? '#c6f6d5' : isHighUrgency ? '#fed7d7' : isNegative ? '#fed7d7' : isPositive ? '#c6f6d5' : '#e2e8f0';
+  const leftBorderColor = approved ? '#48bb78'
+    : isHighUrgency ? '#e53e3e'
+    : isNegative ? '#fc8181'
+    : isPositive ? '#68d391'
+    : '#cbd5e0';
+  const leftBorder = `4px solid ${leftBorderColor}`;
 
   return (
     <div style={{
@@ -149,7 +155,7 @@ function ReviewCard({ review, tenantId, onApproved }) {
             onClick={handleApprove}
             disabled={approving}
             style={{
-              background: approving ? '#9ae6b4' : isNegative ? '#e53e3e' : '#48bb78',
+              background: approving ? '#9ae6b4' : '#48bb78',
               color: '#fff', border: 'none', borderRadius: '8px', padding: '8px 18px',
               fontWeight: 700, cursor: approving ? 'not-allowed' : 'pointer', fontSize: '13px',
             }}

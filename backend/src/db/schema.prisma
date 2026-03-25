@@ -51,11 +51,16 @@ model Review {
 }
 
 model DeliveryConfig {
-  id             String  @id @default(cuid())
-  tenantId       String  @unique
-  whatsappNumber String?
-  telegramChatId String?
-  email          String?
-  digestTime     String  @default("20:00")
-  tenant         Tenant  @relation(fields: [tenantId], references: [id])
+  id              String  @id @default(cuid())
+  tenantId        String  @unique
+  whatsappEnabled Boolean @default(false)
+  whatsappNumber  String?
+  telegramEnabled Boolean @default(false)
+  telegramChatId  String?
+  emailEnabled    Boolean @default(false)
+  email           String?
+  digestTime      String  @default("20:00")
+  replyMode       String  @default("hold_all")
+  businessName    String?
+  tenant          Tenant  @relation(fields: [tenantId], references: [id])
 }

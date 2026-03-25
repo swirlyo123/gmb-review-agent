@@ -105,6 +105,77 @@ function startPolling() {
   console.log('⏰ GMB poll job scheduled: every 15 minutes');
 }
 
+// Demo pipeline — processes mock reviews through real Claude AI, saves to DB
+async function pollMockData(tenantId) {
+  console.log(`🧪 No locations found — running demo AI pipeline for tenant: ${tenantId}`);
+
+  // Find or create a demo location for this tenant
+  let demoLocation = await prisma.location.findFirst({
+    where: { tenantId, gmbLocationId: 'demo-mock-location' },
+  });
+
+  if (!demoLocation) {
+    demoLocation = await prisma.location.create({
+      data: {
+        tenantId,
+        gmbLocationId: 'demo-mock-location',
+        name: 'SWIRLYO Demo Store',
+        address: 'Demo — connect GMB for real data',
+        isActive: true,
+      },
+    });
+    console.log(`📍 Created demo location for tenant ${tenantId}`);
+  }
+
+  const mockReviews = [
+    { gmbId: 'demo-review-001', authorName: 'Aarav Sharma',  stars: 5, text: 'Best frozen yogurt in Bangalore! The mango flavor is out of this world. Will definitely be back with the whole family!' },
+    { gmbId: 'demo-review-002', authorName: 'Priya Mehta',   stars: 2, text: 'Waited 25 minutes for my order and it was still wrong. Staff seemed completely disorganized. Very disappointing experience.' },
+    { gmbId: 'demo-review-003', authorName: 'Rohan Kapoor',  stars: 4, text: 'Great flavors and nice ambiance. A bit pricey but worth it as a treat. Loved the toppings bar!' },
+  ];
+
+  let newFound = 0;
+  let processed = 0;
+
+  for (const mock of mockReviews) {
+    const existing = await prisma.review.findUnique({ where: { gmbReviewId: mock.gmbId } });
+    if (existing) { console.log(`⏭️  Already in DB: ${mock.authorName}`); continue; }
+
+    newFound++;
+    console.log(`\n🆕 Demo review: ${mock.authorName} (${mock.stars}⭐)`);
+
+    let sentiment = null;
+    let reply = null;
+
+    try {
+      sentiment = await analyzeSentiment(mock.text, mock.stars);
+      reply = await generateReply(mock.text, mock.stars, 'SWIRLYO');
+      console.log(`🤖 Sentiment: ${sentiment.sentiment} | Urgency: ${sentiment.urgency}`);
+      processed++;
+    } catch (err) {
+      console.error(`⚠️  AI pipeline failed for demo review:`, err.message);
+    }
+
+    await prisma.review.create({
+      data: {
+        locationId:  demoLocation.id,
+        gmbReviewId: mock.gmbId,
+        authorName:  mock.authorName,
+        starRating:  mock.stars,
+        comment:     mock.text,
+        sentiment:   sentiment?.sentiment || null,
+        urgency:     sentiment?.urgency   || null,
+        autoReply:   reply || null,
+        replyPosted: false,
+      },
+    });
+
+    console.log(`💾 Saved to DB — waiting for approval`);
+  }
+
+  console.log(`\n✅ Demo poll done. New: ${newFound} | AI processed: ${processed}`);
+  return { newReviews: newFound, processed, locations: 1, demo: true };
+}
+
 // Manual trigger — run one cycle now and return stats
 async function triggerPoll(tenantId) {
   console.log(`🚀 Manual poll triggered — tenant: ${tenantId || 'all'}`);
@@ -115,7 +186,8 @@ async function triggerPoll(tenantId) {
       include: { tenant: true },
     });
 
-    if (!locations.length) throw new Error('No active locations found for this tenant');
+    // No real locations yet — run demo pipeline to prove AI works end-to-end
+    if (!locations.length) return await pollMockData(tenantId);
 
     let totalNew = 0;
     for (const loc of locations) {
