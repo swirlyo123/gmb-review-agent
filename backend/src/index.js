@@ -1,6 +1,8 @@
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
+const fs = require('fs');
 const authRoutes = require('./routes/auth');
 const reviewRoutes = require('./routes/reviews');
 const settingsRoutes = require('./routes/settings');
@@ -35,6 +37,16 @@ app.use('/api/auth', authRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/telegram', telegramRouter);
+
+// Serve built React frontend in production
+const frontendDist = path.join(__dirname, '../../frontend/dist');
+if (fs.existsSync(frontendDist)) {
+  app.use(express.static(frontendDist));
+  app.get('*', (req, res) => {
+    res.sendFile(path.join(frontendDist, 'index.html'));
+  });
+  console.log('📦 Serving static frontend from', frontendDist);
+}
 
 // Start server
 app.listen(PORT, () => {

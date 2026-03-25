@@ -1,12 +1,9 @@
-// Production schema — PostgreSQL (Railway)
-// For local dev use: npx prisma db push --schema=src/db/schema.dev.prisma
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -23,6 +20,7 @@ model Tenant {
   deliveryConfig DeliveryConfig?
 }
 
+// One row per GMB location being monitored (a tenant can have many)
 model Location {
   id            String   @id @default(cuid())
   tenantId      String
