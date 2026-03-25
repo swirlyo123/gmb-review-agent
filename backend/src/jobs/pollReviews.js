@@ -10,7 +10,7 @@ async function pollAllLocations() {
   console.log('\n🔄 === Poll cycle starting ===');
 
   const locations = await prisma.location.findMany({
-    where: { isActive: true },
+    where: { isActive: true, NOT: { gmbLocationId: 'demo-mock-location' } },
     include: { tenant: true },
   });
 
@@ -182,11 +182,11 @@ async function triggerPoll(tenantId) {
 
   if (tenantId) {
     const locations = await prisma.location.findMany({
-      where: { tenantId, isActive: true },
+      where: { tenantId, isActive: true, NOT: { gmbLocationId: 'demo-mock-location' } },
       include: { tenant: true },
     });
 
-    // No real locations yet — run demo pipeline to prove AI works end-to-end
+    // No real GMB locations yet — run demo pipeline to prove AI works end-to-end
     if (!locations.length) return await pollMockData(tenantId);
 
     let totalNew = 0;
