@@ -25,19 +25,27 @@ async function sendWhatsApp(message, phoneNumber) {
 }
 
 async function sendTelegram(message, chatId) {
-  console.log(`📨 Sending Telegram notification to chat ${chatId}...`);
-
   const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!token)  throw new Error('TELEGRAM_BOT_TOKEN not set');
+  if (!chatId) throw new Error('Telegram chatId is empty');
+
+  console.log(`📨 Sending Telegram message to chat ${chatId}...`);
+
   const url = `https://api.telegram.org/bot${token}/sendMessage`;
 
-  const response = await axios.post(url, {
-    chat_id: chatId,
-    text: message,
-    parse_mode: 'HTML',
-  });
-
-  console.log(`✅ Telegram sent. Message ID: ${response.data.result?.message_id}`);
-  return response.data;
+  try {
+    const response = await axios.post(url, {
+      chat_id: chatId,
+      text: message,
+      parse_mode: 'HTML',
+    });
+    console.log(`✅ Telegram sent — message_id: ${response.data.result?.message_id}`);
+    return response.data;
+  } catch (err) {
+    const detail = err.response?.data?.description || err.message;
+    throw new Error(`Telegram API error: ${detail}`);
+  }
 }
 
 async function sendEmail(subject, body, toEmail) {
