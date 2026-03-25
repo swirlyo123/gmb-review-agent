@@ -1,6 +1,6 @@
 const cron = require('node-cron');
 const { prisma } = require('../lib/prisma');
-const { getReviews, getValidAccessToken } = require('../services/gmb');
+const { getReviews, getValidAccessToken, postReply } = require('../services/gmb');
 const { analyzeSentiment, generateReply } = require('../services/claude');
 const { notifyAll } = require('../services/delivery');
 const { sendDailyDigest } = require('../services/digest');
@@ -83,12 +83,35 @@ async function pollLocation(location) {
       },
     });
 
-    console.log(`💾 Saved to DB — waiting for approval`);
+    // Fetch delivery config once — used for both replyMode and notifications
+    const deliveryConfig = await prisma.deliveryConfig.findUnique({ where: { tenantId: tenant.id } });
+    const replyMode = deliveryConfig?.replyMode || 'hold_all';
+
+    // Auto-post if replyMode says so (only for real GMB locations)
+    const shouldAutoPost = reply && (
+      replyMode === 'auto_all' ||
+      (replyMode === 'auto_positive' && starRating >= 4)
+    );
+
+    if (shouldAutoPost) {
+      try {
+        const token = await getValidAccessToken(tenant);
+        await postReply(token, location.gmbLocationId, gmbReviewId, reply);
+        await prisma.review.update({
+          where: { gmbReviewId },
+          data: { replyPosted: true, approvedAt: new Date() },
+        });
+        console.log(`🤖 Auto-posted reply (mode: ${replyMode})`);
+      } catch (err) {
+        console.error(`⚠️ Auto-post failed:`, err.message);
+      }
+    } else {
+      console.log(`💾 Saved to DB — waiting for approval`);
+    }
 
     // Fire notifications if AI analysis succeeded
     if (sentiment && reply) {
       try {
-        const deliveryConfig = await prisma.deliveryConfig.findUnique({ where: { tenantId: tenant.id } });
         await notifyAll({ starRating, authorName, comment }, sentiment, reply, deliveryConfig);
       } catch (err) {
         console.error(`⚠️ Notification failed for review:`, err.message);
@@ -111,37 +134,38 @@ function parseStarRating(starStr) {
 }
 
 async function sendDailyDigestAll() {
-  console.log('\n📊 === Daily digest starting ===');
+  const now = new Date();
+  const currentTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
   try {
-    const tenants = await prisma.tenant.findMany({
-      include: { deliveryConfig: true },
-    });
+    const tenants = await prisma.tenant.findMany({ include: { deliveryConfig: true } });
 
     for (const tenant of tenants) {
+      const digestTime = tenant.deliveryConfig?.digestTime || '20:00';
+      if (digestTime !== currentTime) continue; // not this tenant's time yet
+
+      console.log(`\n📊 Daily digest for ${tenant.businessName} (${digestTime})`);
       try {
         const today = new Date();
         today.setHours(0, 0, 0, 0);
 
         const reviews = await prisma.review.findMany({
-          where: {
-            location: { tenantId: tenant.id },
-            createdAt: { gte: today },
-          },
+          where: { location: { tenantId: tenant.id }, createdAt: { gte: today } },
           include: { location: true },
         });
 
         if (!reviews.length) {
-          console.log(`ℹ️  No reviews today for tenant ${tenant.id}`);
+          console.log(`ℹ️  No reviews today for ${tenant.businessName}`);
           continue;
         }
 
         await sendDailyDigest(tenant.id, reviews, tenant.deliveryConfig);
       } catch (err) {
-        console.error(`❌ Digest failed for tenant ${tenant.id}:`, err.message);
+        console.error(`❌ Digest failed for ${tenant.businessName}:`, err.message);
       }
     }
   } catch (err) {
-    console.error('❌ Daily digest job error:', err.message);
+    console.error('❌ Digest scheduler error:', err.message);
   }
 }
 
@@ -149,8 +173,9 @@ function startPolling() {
   cron.schedule('*/15 * * * *', pollAllLocations);
   console.log('⏰ GMB poll job scheduled: every 15 minutes');
 
-  cron.schedule('0 20 * * *', sendDailyDigestAll);
-  console.log('⏰ Daily digest scheduled: every day at 20:00');
+  // Check every minute — each tenant fires digest at their own configured digestTime
+  cron.schedule('* * * * *', sendDailyDigestAll);
+  console.log('⏰ Daily digest scheduler running (fires per-tenant at their configured time)');
 }
 
 // Demo pipeline — processes mock reviews through real Claude AI, saves to DB
