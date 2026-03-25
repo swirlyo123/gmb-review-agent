@@ -5,6 +5,8 @@ const authRoutes = require('./routes/auth');
 const reviewRoutes = require('./routes/reviews');
 const settingsRoutes = require('./routes/settings');
 const { startPolling } = require('./jobs/pollReviews');
+const { prisma } = require('./lib/prisma');
+const { runAutoTest } = require('./scripts/testFlow');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -40,4 +42,14 @@ app.listen(PORT, () => {
   // Start the review polling job
   startPolling();
   console.log('⏰ Review polling job started (every 15 minutes)');
+
+  // Auto test — runs once per day, 5s after boot
+  setTimeout(async () => {
+    try {
+      const tenant = await prisma.tenant.findFirst();
+      if (tenant) await runAutoTest(tenant.id);
+    } catch (err) {
+      console.error('❌ Auto test error:', err.message);
+    }
+  }, 5000);
 });
