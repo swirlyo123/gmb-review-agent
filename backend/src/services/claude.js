@@ -8,7 +8,7 @@ async function analyzeSentiment(reviewText, starRating) {
   const response = await axios.post(
     ANTHROPIC_API_URL,
     {
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 256,
       system: 'You are a review analysis assistant. Always reply in JSON only. No markdown.',
       messages: [
@@ -51,7 +51,7 @@ async function generateReply(reviewText, starRating, businessName) {
   const response = await axios.post(
     ANTHROPIC_API_URL,
     {
-      model: 'claude-sonnet-4-20250514',
+      model: 'claude-sonnet-4-6',
       max_tokens: 300,
       system:
         'You are a professional business owner writing replies to Google reviews. Write in first person, sound human and genuine. Keep replies under 150 words.',

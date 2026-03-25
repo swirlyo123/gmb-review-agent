@@ -4,40 +4,56 @@ import ReviewCard from '../components/ReviewCard';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
-function StatCard({ label, value, color }) {
+function StatCard({ label, value, color, onClick, active }) {
   return (
-    <div style={{
-      background: '#fff',
-      border: '1px solid #e2e8f0',
-      borderRadius: '10px',
-      padding: '16px 20px',
-      minWidth: '120px',
-      textAlign: 'center',
-      boxShadow: '0 1px 3px rgba(0,0,0,0.05)',
-    }}>
-      <div style={{ fontSize: '28px', fontWeight: 700, color: color || '#2d3748' }}>{value}</div>
-      <div style={{ fontSize: '13px', color: '#718096', marginTop: '4px' }}>{label}</div>
+    <div
+      onClick={onClick}
+      style={{
+        background: active ? color + '15' : '#fff',
+        border: `2px solid ${active ? color : '#e2e8f0'}`,
+        borderRadius: '10px',
+        padding: '14px 18px',
+        minWidth: '110px',
+        textAlign: 'center',
+        cursor: onClick ? 'pointer' : 'default',
+        transition: 'all 0.15s',
+      }}
+    >
+      <div style={{ fontSize: '26px', fontWeight: 700, color }}>{value}</div>
+      <div style={{ fontSize: '12px', color: '#718096', marginTop: '3px', fontWeight: 500 }}>{label}</div>
     </div>
   );
 }
 
-function Dashboard() {
+function Dashboard({ tenantId }) {
   const [reviews, setReviews] = useState([]);
   const [counts, setCounts] = useState({});
+  const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [filter, setFilter] = useState('all');
+  const [activeFilter, setActiveFilter] = useState('all');
+  const [activeLocation, setActiveLocation] = useState('all');
+  const [polling, setPolling] = useState(false);
+  const [pollResult, setPollResult] = useState(null);
+  const [source, setSource] = useState('mock');
 
-  async function fetchReviews() {
+  const headers = tenantId ? { 'x-tenant-id': tenantId } : {};
+
+  async function fetchReviews(locationId, status) {
     try {
       setLoading(true);
-      const res = await axios.get(`${API_BASE}/api/reviews`);
-      setReviews(res.data.reviews);
-      setCounts(res.data.counts);
+      const params = {};
+      if (locationId && locationId !== 'all') params.locationId = locationId;
+      if (status && status !== 'all') params.status = status;
+
+      const res = await axios.get(`${API_BASE}/api/reviews`, { headers, params });
+      setReviews(res.data.reviews || []);
+      setCounts(res.data.counts || {});
+      setLocations(res.data.locations || []);
+      setSource(res.data.source || 'mock');
       setError(null);
     } catch (err) {
-      setError('Could not connect to backend. Make sure it is running on port 3001.');
-      console.error('Dashboard fetch error:', err.message);
+      setError('Could not connect to backend.');
     } finally {
       setLoading(false);
     }
@@ -45,100 +61,215 @@ function Dashboard() {
 
   useEffect(() => {
     fetchReviews();
-  }, []);
+  }, [tenantId]);
 
-  function handleReplied(reviewId) {
-    setReviews((prev) =>
-      prev.map((r) => (r.id === reviewId ? { ...r, replyPosted: true } : r))
-    );
-    setCounts((prev) => ({ ...prev, unreplied: Math.max(0, (prev.unreplied || 1) - 1) }));
+  async function handleTriggerPoll() {
+    setPolling(true);
+    setPollResult(null);
+    try {
+      const res = await axios.post(`${API_BASE}/api/reviews/trigger-poll`, {}, { headers });
+      const stats = res.data.stats;
+      setPollResult(stats.newReviews === 0
+        ? 'No new reviews found.'
+        : `${stats.newReviews} new review(s) fetched and analysed!`
+      );
+      await fetchReviews(activeLocation, activeFilter === 'all' ? null : activeFilter);
+    } catch (err) {
+      setPollResult('Poll failed: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setPolling(false);
+      setTimeout(() => setPollResult(null), 6000);
+    }
   }
 
-  const filtered = filter === 'all'
-    ? reviews
-    : filter === 'unreplied'
-    ? reviews.filter((r) => !r.replyPosted)
-    : reviews.filter((r) => r.sentiment === filter);
+  function handleFilterChange(filter) {
+    setActiveFilter(filter);
+    const status = filter === 'all' ? null : filter;
+    fetchReviews(activeLocation === 'all' ? null : activeLocation, status);
+  }
 
-  const filterBtnStyle = (val) => ({
-    background: filter === val ? '#4299e1' : '#edf2f7',
-    color: filter === val ? '#fff' : '#4a5568',
-    border: 'none',
-    borderRadius: '8px',
-    padding: '6px 14px',
-    fontWeight: 600,
-    cursor: 'pointer',
-    fontSize: '13px',
-  });
+  function handleLocationChange(locId) {
+    setActiveLocation(locId);
+    const status = activeFilter === 'all' ? null : activeFilter;
+    fetchReviews(locId === 'all' ? null : locId, status);
+  }
+
+  function handleApproved(reviewId) {
+    setReviews((prev) => prev.map((r) =>
+      r.id === reviewId ? { ...r, replyPosted: true, approvedAt: new Date().toISOString() } : r
+    ));
+    setCounts((prev) => ({
+      ...prev,
+      replied: (prev.replied || 0) + 1,
+      pendingApproval: Math.max(0, (prev.pendingApproval || 1) - 1),
+      needsAttention: reviews.find((r) => r.id === reviewId)?.sentiment === 'negative'
+        ? Math.max(0, (prev.needsAttention || 1) - 1)
+        : prev.needsAttention,
+    }));
+  }
+
+  const filterButtons = [
+    { key: 'all', label: 'All Reviews', color: '#4a5568' },
+    { key: 'pending', label: '⏳ Pending Approval', color: '#d97706' },
+    { key: 'needs_attention', label: '🚨 Needs Attention', color: '#e53e3e' },
+    { key: 'replied', label: '✅ Replied', color: '#38a169' },
+  ];
 
   return (
     <div>
-      <h1 style={{ fontSize: '26px', fontWeight: 700, color: '#1a202c', marginBottom: '4px' }}>
-        GMB Review Agent
-      </h1>
-      <p style={{ color: '#718096', marginBottom: '24px' }}>
-        Monitor, analyze, and respond to your Google Business reviews.
-      </p>
-
-      {/* Stats */}
-      {!loading && !error && (
-        <div style={{ display: 'flex', gap: '12px', marginBottom: '28px', flexWrap: 'wrap' }}>
-          <StatCard label="Total Reviews" value={counts.total || 0} color="#2d3748" />
-          <StatCard label="Positive" value={counts.positive || 0} color="#38a169" />
-          <StatCard label="Negative" value={counts.negative || 0} color="#e53e3e" />
-          <StatCard label="Neutral" value={counts.neutral || 0} color="#718096" />
-          <StatCard label="Need Reply" value={counts.unreplied || 0} color="#d97706" />
+      {/* Header */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+        <div>
+          <h1 style={{ fontSize: '24px', fontWeight: 700, color: '#1a202c', margin: 0 }}>
+            Review Dashboard
+          </h1>
+          <p style={{ color: '#718096', margin: '4px 0 0', fontSize: '14px' }}>
+            {source === 'db' ? `${locations.length} location(s) monitored` : 'Demo data — connect GMB to see real reviews'}
+          </p>
         </div>
-      )}
-
-      {/* Filters */}
-      {!loading && !error && (
-        <div style={{ display: 'flex', gap: '8px', marginBottom: '20px', flexWrap: 'wrap' }}>
-          <button style={filterBtnStyle('all')} onClick={() => setFilter('all')}>All</button>
-          <button style={filterBtnStyle('positive')} onClick={() => setFilter('positive')}>✅ Positive</button>
-          <button style={filterBtnStyle('negative')} onClick={() => setFilter('negative')}>❌ Negative</button>
-          <button style={filterBtnStyle('neutral')} onClick={() => setFilter('neutral')}>➖ Neutral</button>
-          <button style={filterBtnStyle('unreplied')} onClick={() => setFilter('unreplied')}>⚠️ Unreplied</button>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          {source === 'db' && (
+            <span style={{ background: '#c6f6d5', color: '#276749', fontSize: '11px', fontWeight: 700, padding: '4px 10px', borderRadius: '20px' }}>
+              ● Live GMB
+            </span>
+          )}
           <button
-            onClick={fetchReviews}
-            style={{ ...filterBtnStyle(''), marginLeft: 'auto', background: '#edf2f7' }}
+            onClick={handleTriggerPoll}
+            disabled={polling || !tenantId}
+            style={{
+              background: polling ? '#bee3f8' : '#4299e1',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              padding: '8px 16px',
+              fontWeight: 700,
+              cursor: polling || !tenantId ? 'not-allowed' : 'pointer',
+              fontSize: '13px',
+            }}
           >
-            🔄 Refresh
+            {polling ? '⏳ Polling...' : '🔄 Poll GMB Now'}
           </button>
         </div>
-      )}
+      </div>
 
-      {/* States */}
-      {loading && (
-        <div style={{ textAlign: 'center', color: '#718096', padding: '60px 0' }}>
-          Loading reviews...
+      {/* Poll result toast */}
+      {pollResult && (
+        <div style={{
+          background: pollResult.includes('failed') ? '#fff5f5' : '#f0fff4',
+          border: `1px solid ${pollResult.includes('failed') ? '#fc8181' : '#9ae6b4'}`,
+          borderRadius: '8px',
+          padding: '10px 16px',
+          marginBottom: '16px',
+          fontSize: '14px',
+          color: pollResult.includes('failed') ? '#c53030' : '#276749',
+          fontWeight: 500,
+        }}>
+          {pollResult}
         </div>
       )}
 
+      {/* Stat cards */}
+      {!loading && !error && (
+        <div style={{ display: 'flex', gap: '10px', marginBottom: '20px', flexWrap: 'wrap' }}>
+          <StatCard label="Total" value={counts.total || 0} color="#4a5568" />
+          <StatCard label="Pending" value={counts.pendingApproval || 0} color="#d97706"
+            onClick={() => handleFilterChange('pending')} active={activeFilter === 'pending'} />
+          <StatCard label="🚨 Attention" value={counts.needsAttention || 0} color="#e53e3e"
+            onClick={() => handleFilterChange('needs_attention')} active={activeFilter === 'needs_attention'} />
+          <StatCard label="✅ Replied" value={counts.replied || 0} color="#38a169"
+            onClick={() => handleFilterChange('replied')} active={activeFilter === 'replied'} />
+          <StatCard label="Positive" value={counts.positive || 0} color="#38a169" />
+          <StatCard label="Negative" value={counts.negative || 0} color="#e53e3e" />
+        </div>
+      )}
+
+      {/* Location filter */}
+      {locations.length > 1 && (
+        <div style={{ display: 'flex', gap: '6px', marginBottom: '12px', flexWrap: 'wrap' }}>
+          <button
+            onClick={() => handleLocationChange('all')}
+            style={locBtnStyle(activeLocation === 'all')}
+          >
+            All Stores
+          </button>
+          {locations.map((loc) => (
+            <button
+              key={loc.id}
+              onClick={() => handleLocationChange(loc.id)}
+              style={locBtnStyle(activeLocation === loc.id)}
+            >
+              📍 {loc.name}
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Status filters */}
+      <div style={{ display: 'flex', gap: '6px', marginBottom: '20px', flexWrap: 'wrap' }}>
+        {filterButtons.map((f) => (
+          <button
+            key={f.key}
+            onClick={() => handleFilterChange(f.key)}
+            style={{
+              background: activeFilter === f.key ? f.color : '#edf2f7',
+              color: activeFilter === f.key ? '#fff' : '#4a5568',
+              border: 'none',
+              borderRadius: '8px',
+              padding: '6px 14px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              fontSize: '13px',
+            }}
+          >
+            {f.label}
+          </button>
+        ))}
+      </div>
+
+      {/* States */}
+      {loading && <div style={{ textAlign: 'center', color: '#718096', padding: '60px 0' }}>Loading reviews...</div>}
+
       {error && (
-        <div style={{
-          background: '#fff5f5',
-          border: '1px solid #fc8181',
-          borderRadius: '10px',
-          padding: '16px 20px',
-          color: '#c53030',
-        }}>
+        <div style={{ background: '#fff5f5', border: '1px solid #fc8181', borderRadius: '10px', padding: '16px', color: '#c53030' }}>
           ❌ {error}
         </div>
       )}
 
-      {!loading && !error && filtered.length === 0 && (
+      {!loading && !error && reviews.length === 0 && (
         <div style={{ textAlign: 'center', color: '#718096', padding: '60px 0' }}>
-          No reviews match this filter.
+          <div style={{ fontSize: '32px', marginBottom: '12px' }}>
+            {activeFilter === 'pending' ? '🎉' : activeFilter === 'needs_attention' ? '✅' : '📭'}
+          </div>
+          {activeFilter === 'pending' ? 'All caught up — no replies pending!' :
+           activeFilter === 'needs_attention' ? 'No negative reviews need attention.' :
+           'No reviews yet. Click "Poll GMB Now" to fetch them.'}
         </div>
       )}
 
       {/* Review list */}
-      {filtered.map((review) => (
-        <ReviewCard key={review.id} review={review} onReplied={handleReplied} />
+      {!loading && !error && reviews.map((review) => (
+        <ReviewCard
+          key={review.id}
+          review={review}
+          tenantId={tenantId}
+          onApproved={handleApproved}
+        />
       ))}
     </div>
   );
+}
+
+function locBtnStyle(active) {
+  return {
+    background: active ? '#2d3748' : '#edf2f7',
+    color: active ? '#fff' : '#4a5568',
+    border: 'none',
+    borderRadius: '8px',
+    padding: '5px 12px',
+    fontWeight: 600,
+    cursor: 'pointer',
+    fontSize: '12px',
+  };
 }
 
 export default Dashboard;

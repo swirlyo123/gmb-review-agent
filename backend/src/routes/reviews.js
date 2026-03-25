@@ -1,119 +1,210 @@
 const express = require('express');
 const router = express.Router();
+const { PrismaClient } = require('@prisma/client');
 const { analyzeSentiment, generateReply } = require('../services/claude');
+const { postReply, getValidAccessToken } = require('../services/gmb');
+const { triggerPoll } = require('../jobs/pollReviews');
 
-// Mock review data until GMB API + DB is wired up in Phase 2
-const mockReviews = [
-  {
-    id: 'rev_001',
-    gmbReviewId: 'gmb_001',
-    authorName: 'Sarah Johnson',
-    starRating: 5,
-    comment:
-      'Absolutely loved this place! The staff were incredibly friendly and the food was amazing. Will definitely be back!',
-    sentiment: 'positive',
-    autoReply:
-      "Thank you so much, Sarah! We're thrilled you had a wonderful experience — the team will love hearing this. See you next time!",
-    replyPosted: false,
-    createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
-  },
-  {
-    id: 'rev_002',
-    gmbReviewId: 'gmb_002',
-    authorName: 'Mark Thompson',
-    starRating: 2,
-    comment:
-      'Really disappointing visit. Waited over 30 minutes and the order was wrong. The manager did not seem to care.',
-    sentiment: 'negative',
-    autoReply:
-      "Hi Mark, we're truly sorry about your experience — this is not the standard we hold ourselves to. Please reach out to us directly so we can make this right.",
-    replyPosted: false,
-    createdAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
-  },
-  {
-    id: 'rev_003',
-    gmbReviewId: 'gmb_003',
-    authorName: 'Lisa Chen',
-    starRating: 4,
-    comment:
-      'Great experience overall! Food was delicious and the atmosphere was nice. Service could be a little faster but nothing major.',
-    sentiment: 'positive',
-    autoReply:
-      "Thank you, Lisa! So glad you enjoyed the food and atmosphere. We're always working to improve our service speed — appreciate the honest feedback!",
-    replyPosted: true,
-    createdAt: new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
-  },
-  {
-    id: 'rev_004',
-    gmbReviewId: 'gmb_004',
-    authorName: 'David Park',
-    starRating: 3,
-    comment: 'It was okay. Nothing special, nothing terrible. Average food, average service.',
-    sentiment: 'neutral',
-    autoReply:
-      "Thanks for visiting, David. We appreciate you taking the time to share your thoughts — we'd love to make your next visit a great one!",
-    replyPosted: false,
-    createdAt: new Date(Date.now() - 48 * 60 * 60 * 1000).toISOString(),
-  },
-];
+const prisma = new PrismaClient();
 
-// GET /api/reviews — return all reviews
-router.get('/', (req, res) => {
-  console.log('📋 GET /api/reviews — returning review list');
+// GET /api/reviews — all reviews across all locations for this tenant
+router.get('/', async (req, res) => {
+  const tenantId = req.headers['x-tenant-id'];
+  const { locationId, status, sentiment } = req.query;
 
-  const counts = {
-    total: mockReviews.length,
-    positive: mockReviews.filter((r) => r.sentiment === 'positive').length,
-    negative: mockReviews.filter((r) => r.sentiment === 'negative').length,
-    neutral: mockReviews.filter((r) => r.sentiment === 'neutral').length,
-    unreplied: mockReviews.filter((r) => !r.replyPosted).length,
-  };
-
-  res.json({ reviews: mockReviews, counts });
-});
-
-// POST /api/reviews/reply — mark a review as replied
-router.post('/reply', (req, res) => {
-  const { reviewId, replyText } = req.body;
-  console.log(`📝 POST /api/reviews/reply — reviewId: ${reviewId}`);
-
-  if (!reviewId || !replyText) {
-    return res.status(400).json({ error: 'reviewId and replyText are required' });
-  }
-
-  const review = mockReviews.find((r) => r.id === reviewId);
-  if (!review) {
-    return res.status(404).json({ error: 'Review not found' });
-  }
-
-  review.replyPosted = true;
-  review.autoReply = replyText;
-
-  console.log(`✅ Review ${reviewId} marked as replied`);
-  res.json({ success: true, review });
-});
-
-// POST /api/reviews/analyze — analyze sentiment for a review text (utility endpoint)
-router.post('/analyze', async (req, res) => {
-  const { reviewText, starRating, businessName } = req.body;
-  console.log(`🔍 POST /api/reviews/analyze — analyzing review...`);
-
-  if (!reviewText || !starRating) {
-    return res.status(400).json({ error: 'reviewText and starRating are required' });
+  if (!tenantId) {
+    return res.json({ reviews: getMockReviews(), counts: getMockCounts(), source: 'mock' });
   }
 
   try {
-    const sentiment = await analyzeSentiment(reviewText, starRating);
-    const reply = await generateReply(
-      reviewText,
-      starRating,
-      businessName || 'Our Business'
-    );
-    res.json({ sentiment, reply });
+    // Get all active location IDs for this tenant
+    const locationFilter = { tenantId, isActive: true };
+    if (locationId) locationFilter.id = locationId;
+
+    const locations = await prisma.location.findMany({ where: locationFilter });
+    const locationIds = locations.map((l) => l.id);
+
+    if (!locationIds.length) {
+      return res.json({ reviews: [], counts: buildCounts([]), source: 'db', message: 'No locations configured' });
+    }
+
+    // Build review query
+    const reviewWhere = { locationId: { in: locationIds } };
+    if (sentiment) reviewWhere.sentiment = sentiment;
+    if (status === 'pending') reviewWhere.replyPosted = false;
+    if (status === 'replied') reviewWhere.replyPosted = true;
+    if (status === 'needs_attention') {
+      reviewWhere.sentiment = 'negative';
+      reviewWhere.replyPosted = false;
+    }
+
+    const reviews = await prisma.review.findMany({
+      where: reviewWhere,
+      include: { location: { select: { id: true, name: true, address: true } } },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // Shape response
+    const shaped = reviews.map((r) => ({
+      id: r.id,
+      gmbReviewId: r.gmbReviewId,
+      authorName: r.authorName,
+      starRating: r.starRating,
+      comment: r.comment,
+      sentiment: r.sentiment,
+      urgency: r.urgency,
+      autoReply: r.autoReply,
+      replyPosted: r.replyPosted,
+      approvedAt: r.approvedAt,
+      createdAt: r.createdAt,
+      locationId: r.locationId,
+      locationName: r.location.name,
+      locationAddress: r.location.address,
+    }));
+
+    res.json({
+      reviews: shaped,
+      counts: buildCounts(shaped),
+      source: 'db',
+      locations: locations.map((l) => ({ id: l.id, name: l.name })),
+    });
   } catch (err) {
-    console.error('❌ Analysis error:', err.message);
-    res.status(500).json({ error: 'Failed to analyze review', details: err.message });
+    console.error('❌ GET /api/reviews error:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
+
+// POST /api/reviews/:id/approve — approve AI reply and post to GMB
+router.post('/:id/approve', async (req, res) => {
+  const { id } = req.params;
+  const { replyText } = req.body;
+  const tenantId = req.headers['x-tenant-id'];
+
+  console.log(`✅ POST /api/reviews/${id}/approve`);
+
+  if (!tenantId) return res.status(400).json({ error: 'x-tenant-id header required' });
+
+  try {
+    const review = await prisma.review.findUnique({
+      where: { id },
+      include: { location: { include: { tenant: true } } },
+    });
+
+    if (!review) return res.status(404).json({ error: 'Review not found' });
+    if (review.replyPosted) return res.json({ success: true, message: 'Already replied' });
+
+    const replyToPost = replyText || review.autoReply;
+    if (!replyToPost) return res.status(400).json({ error: 'No reply text to post' });
+
+    const tenant = review.location.tenant;
+    const accessToken = await getValidAccessToken(tenant);
+
+    await postReply(
+      accessToken,
+      review.location.gmbLocationId,
+      review.gmbReviewId,
+      replyToPost
+    );
+
+    const updated = await prisma.review.update({
+      where: { id },
+      data: {
+        replyPosted: true,
+        autoReply: replyToPost,
+        approvedAt: new Date(),
+      },
+    });
+
+    console.log(`✅ Reply approved and posted to GMB for review ${id}`);
+    res.json({ success: true, review: updated });
+  } catch (err) {
+    console.error('❌ approve error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/reviews/:id/regenerate — regenerate AI reply
+router.post('/:id/regenerate', async (req, res) => {
+  const { id } = req.params;
+  const tenantId = req.headers['x-tenant-id'];
+
+  try {
+    const review = await prisma.review.findUnique({
+      where: { id },
+      include: { location: true },
+    });
+    if (!review) return res.status(404).json({ error: 'Review not found' });
+
+    const reply = await generateReply(review.comment, review.starRating, review.location.name);
+    const sentiment = await analyzeSentiment(review.comment, review.starRating);
+
+    const updated = await prisma.review.update({
+      where: { id },
+      data: {
+        autoReply: reply,
+        sentiment: sentiment.sentiment,
+        urgency: sentiment.urgency,
+      },
+    });
+
+    res.json({ success: true, review: updated, reply, sentiment });
+  } catch (err) {
+    console.error('❌ regenerate error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/reviews/trigger-poll
+router.post('/trigger-poll', async (req, res) => {
+  const tenantId = req.headers['x-tenant-id'];
+  console.log(`🚀 POST /api/reviews/trigger-poll`);
+  try {
+    const stats = await triggerPoll(tenantId || null);
+    res.json({ success: true, stats });
+  } catch (err) {
+    console.error('❌ trigger-poll error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/reviews/analyze — one-off test
+router.post('/analyze', async (req, res) => {
+  const { reviewText, starRating, businessName } = req.body;
+  if (!reviewText || !starRating) {
+    return res.status(400).json({ error: 'reviewText and starRating are required' });
+  }
+  try {
+    const sentiment = await analyzeSentiment(reviewText, starRating);
+    const reply = await generateReply(reviewText, starRating, businessName || 'Our Business');
+    res.json({ sentiment, reply });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+function buildCounts(reviews) {
+  return {
+    total: reviews.length,
+    positive: reviews.filter((r) => r.sentiment === 'positive').length,
+    negative: reviews.filter((r) => r.sentiment === 'negative').length,
+    neutral: reviews.filter((r) => r.sentiment === 'neutral').length,
+    pendingApproval: reviews.filter((r) => !r.replyPosted && r.autoReply).length,
+    needsAttention: reviews.filter((r) => r.sentiment === 'negative' && !r.replyPosted).length,
+    replied: reviews.filter((r) => r.replyPosted).length,
+  };
+}
+
+function getMockCounts() {
+  return buildCounts(getMockReviews());
+}
+
+function getMockReviews() {
+  return [
+    { id: 'mock_1', gmbReviewId: 'g1', authorName: 'Sarah Johnson', starRating: 5, comment: 'Absolutely loved this place! The mango froyo was incredible.', sentiment: 'positive', urgency: 'low', autoReply: "Thank you so much, Sarah! The mango is a fan favourite — so glad you loved it. See you again soon!", replyPosted: false, locationName: 'SWIRLYO Demo', createdAt: new Date(Date.now() - 2 * 3600000).toISOString() },
+    { id: 'mock_2', gmbReviewId: 'g2', authorName: 'Mark Thompson', starRating: 2, comment: 'Waited 30 minutes and the order was wrong. Very disappointed.', sentiment: 'negative', urgency: 'high', autoReply: "Hi Mark, we're really sorry about this experience — this isn't the standard we hold ourselves to. Please reach out to us directly so we can make it right.", replyPosted: false, locationName: 'SWIRLYO Demo', createdAt: new Date(Date.now() - 5 * 3600000).toISOString() },
+    { id: 'mock_3', gmbReviewId: 'g3', authorName: 'Lisa Chen', starRating: 4, comment: 'Great froyo and friendly staff! Could use more seating.', sentiment: 'positive', urgency: 'low', autoReply: "Thanks Lisa! We appreciate the feedback on seating — we're always looking to improve the experience. Hope to see you back soon!", replyPosted: true, approvedAt: new Date(Date.now() - 1 * 3600000).toISOString(), locationName: 'SWIRLYO Demo', createdAt: new Date(Date.now() - 24 * 3600000).toISOString() },
+    { id: 'mock_4', gmbReviewId: 'g4', authorName: 'David Park', starRating: 3, comment: 'It was okay. Nothing special, nothing terrible.', sentiment: 'neutral', urgency: 'low', autoReply: "Thanks for visiting, David! We'd love to make your next visit a great one — come say hi to the team.", replyPosted: false, locationName: 'SWIRLYO Demo', createdAt: new Date(Date.now() - 48 * 3600000).toISOString() },
+  ];
+}
 
 module.exports = router;

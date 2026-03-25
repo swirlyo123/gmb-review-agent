@@ -1,4 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
+import axios from 'axios';
+
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 function FormField({ label, type = 'text', value, onChange, placeholder, hint }) {
   return (
@@ -27,19 +30,57 @@ function FormField({ label, type = 'text', value, onChange, placeholder, hint })
   );
 }
 
-function Settings() {
+function Settings({ tenantId }) {
   const [whatsapp, setWhatsapp] = useState('');
   const [telegram, setTelegram] = useState('');
   const [email, setEmail] = useState('');
   const [digestTime, setDigestTime] = useState('20:00');
-  const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saveStatus, setSaveStatus] = useState(null); // 'success' | 'error' | null
+  const [loadError, setLoadError] = useState(null);
 
-  function handleSave() {
-    const config = { whatsapp, telegram, email, digestTime };
-    console.log('💾 Saving delivery config:', config);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 3000);
-    // Phase 2: POST to /api/settings with config
+  // Load existing config on mount
+  useEffect(() => {
+    if (!tenantId) return;
+    async function loadConfig() {
+      try {
+        const res = await axios.get(`${API_BASE}/api/settings`, {
+          headers: { 'x-tenant-id': tenantId },
+        });
+        const c = res.data.config;
+        if (c.whatsappNumber) setWhatsapp(c.whatsappNumber);
+        if (c.telegramChatId) setTelegram(c.telegramChatId);
+        if (c.email) setEmail(c.email);
+        if (c.digestTime) setDigestTime(c.digestTime);
+      } catch (err) {
+        setLoadError('Could not load settings.');
+      }
+    }
+    loadConfig();
+  }, [tenantId]);
+
+  async function handleSave() {
+    if (!tenantId) {
+      setSaveStatus('error');
+      return;
+    }
+    setSaving(true);
+    setSaveStatus(null);
+    try {
+      await axios.post(`${API_BASE}/api/settings`, {
+        whatsappNumber: whatsapp,
+        telegramChatId: telegram,
+        email,
+        digestTime,
+      }, { headers: { 'x-tenant-id': tenantId } });
+      setSaveStatus('success');
+      setTimeout(() => setSaveStatus(null), 3000);
+    } catch (err) {
+      console.error('Save failed:', err.message);
+      setSaveStatus('error');
+    } finally {
+      setSaving(false);
+    }
   }
 
   return (
@@ -51,6 +92,18 @@ function Settings() {
         Configure where you receive review alerts and your daily digest.
       </p>
 
+      {!tenantId && (
+        <div style={{ background: '#fff5f5', border: '1px solid #fc8181', borderRadius: '10px', padding: '14px 18px', color: '#c53030', marginBottom: '20px', fontSize: '14px' }}>
+          ⚠️ Not connected to GMB. <a href="/login" style={{ color: '#4285f4', fontWeight: 600 }}>Connect your account first →</a>
+        </div>
+      )}
+
+      {loadError && (
+        <div style={{ background: '#fffbeb', border: '1px solid #fbd38d', borderRadius: '10px', padding: '12px 16px', color: '#744210', marginBottom: '20px', fontSize: '13px' }}>
+          {loadError}
+        </div>
+      )}
+
       <div style={{ background: '#fff', border: '1px solid #e2e8f0', borderRadius: '12px', padding: '28px', maxWidth: '520px' }}>
         <h2 style={{ fontSize: '16px', fontWeight: 700, color: '#2d3748', marginBottom: '20px', marginTop: 0 }}>
           📣 Delivery Channels
@@ -60,8 +113,8 @@ function Settings() {
           label="WhatsApp Number"
           value={whatsapp}
           onChange={setWhatsapp}
-          placeholder="+1234567890"
-          hint="Include country code. Used with AiSensy API."
+          placeholder="+91xxxxxxxxxx"
+          hint="Include country code (+91 for India). Requires AiSensy API key in backend .env."
         />
 
         <FormField
@@ -73,12 +126,12 @@ function Settings() {
         />
 
         <FormField
-          label="Email Address"
+          label="Alert Email Address"
           type="email"
           value={email}
           onChange={setEmail}
           placeholder="you@example.com"
-          hint="Alerts and daily digests will be sent here."
+          hint="New review alerts and daily digests will be sent here."
         />
 
         <div style={{ marginBottom: '24px' }}>
@@ -103,21 +156,31 @@ function Settings() {
           </p>
         </div>
 
-        <button
-          onClick={handleSave}
-          style={{
-            background: '#4299e1',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '8px',
-            padding: '10px 24px',
-            fontWeight: 700,
-            cursor: 'pointer',
-            fontSize: '14px',
-          }}
-        >
-          {saved ? '✅ Saved!' : '💾 Save Settings'}
-        </button>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+          <button
+            onClick={handleSave}
+            disabled={saving || !tenantId}
+            style={{
+              background: saving ? '#90cdf4' : '#4299e1',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '8px',
+              padding: '10px 24px',
+              fontWeight: 700,
+              cursor: saving || !tenantId ? 'not-allowed' : 'pointer',
+              fontSize: '14px',
+            }}
+          >
+            {saving ? 'Saving...' : '💾 Save Settings'}
+          </button>
+
+          {saveStatus === 'success' && (
+            <span style={{ color: '#48bb78', fontWeight: 600, fontSize: '14px' }}>✅ Saved!</span>
+          )}
+          {saveStatus === 'error' && (
+            <span style={{ color: '#e53e3e', fontWeight: 600, fontSize: '14px' }}>❌ Save failed</span>
+          )}
+        </div>
       </div>
     </div>
   );

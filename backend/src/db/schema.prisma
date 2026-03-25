@@ -8,27 +8,46 @@ datasource db {
 }
 
 model Tenant {
-  id             String   @id @default(cuid())
+  id             String    @id @default(cuid())
   businessName   String
-  gmbAccountId   String?
-  gmbLocationId  String?
-  createdAt      DateTime @default(now())
-  reviews        Review[]
+  email          String?   @unique
+  accessToken    String?
+  refreshToken   String?
+  tokenExpiry    DateTime?
+  lastPolled     DateTime?
+  createdAt      DateTime  @default(now())
+  locations      Location[]
   deliveryConfig DeliveryConfig?
 }
 
+// One row per GMB location being monitored (a tenant can have many)
+model Location {
+  id            String   @id @default(cuid())
+  tenantId      String
+  gmbLocationId String   @unique
+  gmbAccountId  String?
+  name          String
+  address       String?
+  isActive      Boolean  @default(true)
+  createdAt     DateTime @default(now())
+  tenant        Tenant   @relation(fields: [tenantId], references: [id])
+  reviews       Review[]
+}
+
 model Review {
-  id          String   @id @default(cuid())
-  tenantId    String
-  gmbReviewId String   @unique
-  authorName  String
-  starRating  Int
-  comment     String
-  sentiment   String?
-  autoReply   String?
-  replyPosted Boolean  @default(false)
-  createdAt   DateTime @default(now())
-  tenant      Tenant   @relation(fields: [tenantId], references: [id])
+  id           String    @id @default(cuid())
+  locationId   String
+  gmbReviewId  String    @unique
+  authorName   String
+  starRating   Int
+  comment      String
+  sentiment    String?
+  urgency      String?
+  autoReply    String?
+  replyPosted  Boolean   @default(false)
+  approvedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  location     Location  @relation(fields: [locationId], references: [id])
 }
 
 model DeliveryConfig {
