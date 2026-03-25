@@ -38,7 +38,6 @@ async function sendTelegram(message, chatId) {
     const response = await axios.post(url, {
       chat_id: chatId,
       text: message,
-      parse_mode: 'HTML',
     });
     console.log(`✅ Telegram sent — message_id: ${response.data.result?.message_id}`);
     return response.data;
@@ -76,12 +75,20 @@ async function sendEmail(subject, body, toEmail) {
 async function notifyAll(reviewData, sentiment, reply, config) {
   const { starRating, authorName, comment } = reviewData;
 
+  const urgencyFlag = sentiment.urgency === 'high' ? '🚨 HIGH URGENCY\n' : '';
   const message =
-    `⭐ ${starRating}/5 — ${authorName}\n\n` +
+    `${urgencyFlag}⭐ ${starRating}/5 — ${authorName}\n\n` +
     `${comment}\n\n` +
-    `Sentiment: ${sentiment.sentiment} (${sentiment.urgency} urgency)\n` +
+    `Sentiment: ${sentiment.sentiment} | Urgency: ${sentiment.urgency}\n` +
     `📝 ${sentiment.summary}\n\n` +
-    `💬 Suggested reply:\n${reply}`;
+    `💬 Suggested reply:\n${reply}\n\n` +
+    `─────────────────\n` +
+    `Reply with:\n` +
+    `APPROVE — post to Google\n` +
+    `REJECT — discard\n` +
+    `SHORTEN — make it shorter\n` +
+    `IMPROVE <instruction>\n` +
+    `  eg: IMPROVE be more empathetic`;
 
   console.log('📣 Sending notifications via all enabled channels...');
 

@@ -7,6 +7,8 @@ const settingsRoutes = require('./routes/settings');
 const { startPolling } = require('./jobs/pollReviews');
 const { prisma } = require('./lib/prisma');
 const { runAutoTest } = require('./scripts/testFlow');
+const { router: telegramRouter, handleCommand } = require('./routes/telegram');
+const { startTelegramPoller } = require('./services/telegramPoller');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -32,6 +34,7 @@ app.get('/health', (req, res) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/reviews', reviewRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/telegram', telegramRouter);
 
 // Start server
 app.listen(PORT, () => {
@@ -42,6 +45,13 @@ app.listen(PORT, () => {
   // Start the review polling job
   startPolling();
   console.log('⏰ Review polling job started (every 15 minutes)');
+
+  // Telegram: use webhook in production, long-poll getUpdates in local dev
+  if (process.env.TELEGRAM_WEBHOOK_URL) {
+    console.log(`🔗 Telegram webhook mode — ${process.env.TELEGRAM_WEBHOOK_URL}/api/telegram/webhook`);
+  } else {
+    startTelegramPoller(handleCommand);
+  }
 
   // Auto test — runs once per day, 5s after boot
   setTimeout(async () => {
