@@ -1,11 +1,9 @@
 const express = require('express');
 const router = express.Router();
-const { PrismaClient } = require('@prisma/client');
+const { prisma } = require('../lib/prisma');
 const { analyzeSentiment, generateReply } = require('../services/claude');
 const { postReply, getValidAccessToken } = require('../services/gmb');
 const { triggerPoll } = require('../jobs/pollReviews');
-
-const prisma = new PrismaClient();
 
 // GET /api/reviews — all reviews across all locations for this tenant
 router.get('/', async (req, res) => {
@@ -95,6 +93,16 @@ router.post('/:id/approve', async (req, res) => {
 
     const replyToPost = replyText || review.autoReply;
     if (!replyToPost) return res.status(400).json({ error: 'No reply text to post' });
+
+    // Demo location — mark as replied in DB without hitting GMB API
+    if (review.location.gmbLocationId === 'demo-mock-location') {
+      const updated = await prisma.review.update({
+        where: { id },
+        data: { replyPosted: true, autoReply: replyToPost, approvedAt: new Date() },
+      });
+      console.log(`✅ Demo review approved (GMB API pending quota approval)`);
+      return res.json({ success: true, demo: true, message: 'Saved locally — will post to Google once GMB quota is approved', review: updated });
+    }
 
     const tenant = review.location.tenant;
     const accessToken = await getValidAccessToken(tenant);

@@ -1,9 +1,9 @@
 const cron = require('node-cron');
-const { PrismaClient } = require('@prisma/client');
+const { prisma } = require('../lib/prisma');
 const { getReviews, getValidAccessToken } = require('../services/gmb');
 const { analyzeSentiment, generateReply } = require('../services/claude');
-
-const prisma = new PrismaClient();
+const { notifyAll } = require('../services/delivery');
+const { sendDailyDigest } = require('../services/digest');
 
 // Poll every active location across every tenant
 async function pollAllLocations() {
@@ -84,6 +84,16 @@ async function pollLocation(location) {
     });
 
     console.log(`💾 Saved to DB — waiting for approval`);
+
+    // Fire notifications if AI analysis succeeded
+    if (sentiment && reply) {
+      try {
+        const deliveryConfig = await prisma.deliveryConfig.findUnique({ where: { tenantId: tenant.id } });
+        await notifyAll({ starRating, authorName, comment }, sentiment, reply, deliveryConfig);
+      } catch (err) {
+        console.error(`⚠️ Notification failed for review:`, err.message);
+      }
+    }
   }
 
   // Update lastPolled on tenant
@@ -100,9 +110,47 @@ function parseStarRating(starStr) {
   return map[starStr] || parseInt(starStr, 10) || 0;
 }
 
+async function sendDailyDigestAll() {
+  console.log('\n📊 === Daily digest starting ===');
+  try {
+    const tenants = await prisma.tenant.findMany({
+      include: { deliveryConfig: true },
+    });
+
+    for (const tenant of tenants) {
+      try {
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        const reviews = await prisma.review.findMany({
+          where: {
+            location: { tenantId: tenant.id },
+            createdAt: { gte: today },
+          },
+          include: { location: true },
+        });
+
+        if (!reviews.length) {
+          console.log(`ℹ️  No reviews today for tenant ${tenant.id}`);
+          continue;
+        }
+
+        await sendDailyDigest(tenant.id, reviews, tenant.deliveryConfig);
+      } catch (err) {
+        console.error(`❌ Digest failed for tenant ${tenant.id}:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.error('❌ Daily digest job error:', err.message);
+  }
+}
+
 function startPolling() {
   cron.schedule('*/15 * * * *', pollAllLocations);
   console.log('⏰ GMB poll job scheduled: every 15 minutes');
+
+  cron.schedule('0 20 * * *', sendDailyDigestAll);
+  console.log('⏰ Daily digest scheduled: every day at 20:00');
 }
 
 // Demo pipeline — processes mock reviews through real Claude AI, saves to DB
@@ -148,7 +196,7 @@ async function pollMockData(tenantId) {
 
     try {
       sentiment = await analyzeSentiment(mock.text, mock.stars);
-      reply = await generateReply(mock.text, mock.stars, 'SWIRLYO');
+      reply = await generateReply(mock.text, mock.stars, demoLocation.name);
       console.log(`🤖 Sentiment: ${sentiment.sentiment} | Urgency: ${sentiment.urgency}`);
       processed++;
     } catch (err) {

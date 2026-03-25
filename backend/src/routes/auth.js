@@ -1,10 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { google } = require('googleapis');
-const { PrismaClient } = require('@prisma/client');
+const { prisma } = require('../lib/prisma');
 const { getOAuthClient } = require('../services/gmb');
-
-const prisma = new PrismaClient();
 
 const SCOPES = [
   'email',
