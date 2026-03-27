@@ -42,7 +42,7 @@ app.use('/api/telegram', telegramRouter);
 const frontendDist = path.join(__dirname, '../../frontend/dist');
 if (fs.existsSync(frontendDist)) {
   app.use(express.static(frontendDist));
-  app.get('*', (req, res) => {
+  app.get('/{*path}', (req, res) => {
     res.sendFile(path.join(frontendDist, 'index.html'));
   });
   console.log('📦 Serving static frontend from', frontendDist);
